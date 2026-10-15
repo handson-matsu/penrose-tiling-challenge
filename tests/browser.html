@@ -29,7 +29,14 @@ await test('PNG: 不整合の共有辺と操作用強調を画像に含めない
 // pointer capture / Safari gestures are additionally covered by the manual checklist.
 const saved=localStorage.getItem('penrose-v1');localStorage.setItem('penrose-v1','[]');
 const iframe=document.createElement('iframe');iframe.title='操作回帰テスト用アプリ';iframe.style='display:block;width:100%;height:850px;border:1px solid #ccc';
-const loaded=new Promise(resolve=>iframe.onload=resolve);iframe.src='../index.html';document.body.append(iframe);await loaded;
+// Load only local HTML. Install a fail-closed fetch mock before any app script.
+// Never navigate this test iframe directly to index.html (that would hit live GAS).
+const appHTML=await (await fetch('../index.html')).text();
+const appBase=new URL('../',location.href).href;
+const counterMock=`<script>window.mockDownloads=[];HTMLAnchorElement.prototype.click=function(){window.mockDownloads.push(this.download);};window.counterRequests=[];window.fetch=(url,options)=>{window.counterRequests.push({url:String(url),options});return Promise.reject(new Error('mock network failure'));};<\/script>`;
+const fixtureHTML=appHTML.replace('<head>',`<head><base href="${appBase}">${counterMock}`);
+async function loadFixture(){const loaded=new Promise(resolve=>iframe.onload=resolve);iframe.srcdoc=fixtureHTML;if(!iframe.isConnected)document.body.append(iframe);await loaded;}
+await loadFixture();
 const doc=iframe.contentDocument,win=iframe.contentWindow;
 const tick=()=>new Promise(resolve=>win.requestAnimationFrame(()=>win.requestAnimationFrame(resolve)));
 const press=async selector=>{const el=doc.querySelector(selector);check(el,'対象がない: '+selector);el.dispatchEvent(new win.KeyboardEvent('keydown',{key:'Enter',bubbles:true}));await tick();};
@@ -42,9 +49,21 @@ const reset=async()=>{if(doc.querySelector('#deleteMode').getAttribute('aria-pre
 const tileData=()=>localStorage.getItem('penrose-v1');
 await tick();
 try {
+ await test('カウンター: GET URL・app・keepalive、通信失敗でもUI起動',async()=>{
+  check(win.counterRequests.length===1,'読み込み時の送信回数');const {url,options}=win.counterRequests[0],parsed=new URL(url);
+  check(parsed.origin==='https://script.google.com'&&parsed.searchParams.get('app')==='penrose-tiling-challenge','URL/app');
+  check(options.method==='GET'&&options.keepalive===true&&options.mode==='no-cors'&&options.credentials==='omit'&&options.cache==='no-store','送信設定');
+  check(doc.querySelectorAll('#palette-thick .edge-number').length===4,'失敗でUIが起動しない');check(!doc.querySelector('#status').textContent.includes('network'),'通信エラー表示');
+ });
  await test('UI: 配置ボタンなし・先に配置済み辺を選ぶ自動配置',async()=>{
   await pick('thick',0);check(tileCount()===1,'最初の1枚');check(!doc.querySelector('#place'),'配置ボタンが残っている');
   await boardEdge(0,0);await pick('thin',0);check(tileCount()===2,'2クリック配置');check(doc.querySelector('#cancel').hidden,'選択が残る');
+ });
+ await test('カウンター: PNG保存操作でも追加送信せず通信失敗を表示しない',async()=>{
+  await click('#save');await click('#download');const deadline=performance.now()+10000;
+  while(!doc.querySelector('#exportStatus').textContent.includes('保存しました')){if(performance.now()>deadline)throw Error('PNG保存が完了しない');await tick();}
+  check(win.mockDownloads.length===1&&win.mockDownloads[0].endsWith('.png'),'PNG保存操作');check(win.counterRequests.length===1,'PNG保存で追加送信');
+  await click('#saveDialog .close');check(!doc.querySelector('#status').textContent.includes('network'),'通信失敗表示');
  });
  await test('UI: 先に追加辺を選ぶ自動配置・不一致の辺と×を表示',async()=>{
   await reset();await pick('thick',0);await pick('thin',0);await boardEdge(0,0);check(tileCount()===2,'逆順配置');
@@ -106,10 +125,12 @@ try {
   check(!doc.querySelector('#availabilityLegend').textContent.includes('計算中'),'計算完了待ち');check(doc.querySelector('#world path[stroke="#31865b"]'),'緑の辺がない');check(tileData()===before,'候補計算が配置を変更');
   doc.querySelector('#available').checked=false;doc.querySelector('#available').dispatchEvent(new win.Event('change'));await tick();check(!doc.querySelector('#world path[stroke="#31865b"]'),'OFFで強調が残る');
   // The normal app also opens a saved >400-piece patch, including the per-edge availability pass.
-  localStorage.setItem('penrose-v1',JSON.stringify(patch));const reloaded=new Promise(resolve=>iframe.onload=resolve);iframe.src='../index.html';await reloaded;
+  check(win.counterRequests.length===1,'操作でカウンターを追加送信');
+  localStorage.setItem('penrose-v1',JSON.stringify(patch));await loadFixture();
   const d=iframe.contentDocument;await new Promise(resolve=>iframe.contentWindow.requestAnimationFrame(()=>iframe.contentWindow.requestAnimationFrame(resolve)));check(d.querySelector('#total').textContent.includes('430'),'430枚復元');
   const toggle=d.querySelector('#available');toggle.checked=true;toggle.dispatchEvent(new iframe.contentWindow.Event('change'));const start=performance.now();
   while(d.querySelector('#availabilityLegend').hidden||d.querySelector('#availabilityLegend').textContent.includes('計算中')){if(performance.now()-start>10000)throw Error('430枚の候補計算タイムアウト');await new Promise(requestAnimationFrame);}
+  check(iframe.contentWindow.counterRequests.length===1,'再読み込み後の送信回数');
   return '430枚の外周候補表示まで '+(performance.now()-start).toFixed(1)+' ms';
  });
 } finally {if(saved===null)localStorage.removeItem('penrose-v1');else localStorage.setItem('penrose-v1',saved);}

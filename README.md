@@ -1,6 +1,6 @@
 # ペンローズ・タイリングに挑戦！（第2版）
 
-P3の太い菱形・細い菱形を、辺を選んでつなぐ数学教材です。HTML / CSS / JavaScriptのみで動作し、実行時の外部ライブラリ・外部フォント・通信APIへの依存はありません。GitHub Pagesで配信できます。
+P3の太い菱形・細い菱形を、辺を選んでつなぐ数学教材です。HTML / CSS / JavaScriptのみで動作し、実行時の外部ライブラリ・外部フォントへの依存はありません。教材機能は通信なしでも動作します。アクセス記録だけ、ページ読み込み時に共通GASへ非同期送信します。GitHub Pagesで配信できます。
 
 ## 起動
 
@@ -19,6 +19,18 @@ python3 -m http.server 8000
 提案する英語のリポジトリ説明文：
 
 > An interactive Penrose P3 tiling playground for exploring rhomb matching rules, with touch-friendly controls and high-resolution PNG export.
+
+## アクセスカウンター
+
+`access-counter.js` を独立したdeferスクリプトとして1回だけ読み込みます。`coin-shooting`・`pencil-factory`と共通のGAS URLを使用します（参照のみで、他リポジトリとGASは変更していません）。指定例の `unit-circle-trig`・`graph-translation-explorer`・`allowance-lab` はこの環境にはなかったため、同じ共通デプロイURLを使う手元の教材に合わせています。
+
+```text
+https://script.google.com/macros/s/AKfycbxssCIHsD-N97SHxNC_GN0ihYeC0qy-lb-EY0KmSs6Gnztaph1sITMerLVEnNWOGkYc/exec?app=penrose-tiling-challenge
+```
+
+GET、`mode: 'no-cors'`、`cache: 'no-store'`、`credentials: 'omit'`、`keepalive: true` で、ページ読み込みにつき1回だけ送信します。重複実行防止フラグを持ち、再読み込みは新しいアクセスとして1回送信します。GASの応答を待たず、配置・削除・Undo/Redo・モード変更・PNG保存などの操作では送信しません。通信失敗・同期例外・fetch未対応は無視し、再送・エラー表示・カウンター数値の表示はしません。
+
+テストで実際のGASへは送信しません。NodeテストはVM内のfetchモックのみを使用します。ブラウザ回帰テストはローカルのHTMLを取得し、fetchモックを先に差し込んだsrcdoc内で実行します。通常のindex.htmlをテスト目的で直接開くと本番カウンターへ送信されるため、カウンターの検証には `tests/browser.html` を使用してください。GAS側の実際の保存・集計結果は未検証です。
 
 ## 操作
 
@@ -109,7 +121,7 @@ npm test
 node --test tests/*.test.mjs
 ```
 
-静的サーバー起動中に `http://localhost:8000/tests/browser.html` を開くと、既存3件を含む12件（430枚描画、PNGエンコード・画素、実際のアプリ文書を使うUI回帰テスト）を実行します。UI回帰テストはiframe内で実行し、ブラウザの保存済み配置は実行後に復元します。テスト中は別タブで作品を編集せず、完了表示まで待ってください。ブラウザテストはインターネット接続不要です。
+静的サーバー起動中に `http://localhost:8000/tests/browser.html` を開くと、既存3件を含む14件（430枚描画、PNGエンコード・画素、実際のアプリ文書を使うUI回帰テスト）を実行します。UI回帰テストはiframe内で実行し、ブラウザの保存済み配置は実行後に復元します。テスト中は別タブで作品を編集せず、完了表示まで待ってください。ブラウザテストはインターネット接続不要です。
 
 詳細は [TEST_RESULTS.md](TEST_RESULTS.md) を参照してください。レスポンシブ幅の検証は実施していますが、実機のiPad Safariによるピンチ・ダウンロード・長時間操作の確認は未実施です。
 
@@ -124,6 +136,8 @@ node --test tests/*.test.mjs
 | `app.js` | UI、エラー・違反箇所・候補辺の表示、カメラ、ポインター操作、自動保存 |
 | `fixtures/` | 既知配置JSONと細分化による生成器 |
 | `tests/geometry.test.mjs`, `tests/v2.test.mjs` | 既存13件＋改善版12件の自動テスト |
+| `access-counter.js` | 共通GASへの読み込み時1回の非同期記録 |
+| `tests/access-counter.test.mjs` | 送信先・設定・回数・失敗・非ブロック性のモック検証6件 |
 | `tests/browser.html` | 実ブラウザでの描画・PNG回帰テスト |
 
 共有辺索引は配置が変わった時だけ更新します。画面移動中はSVGのtransformだけを変更します。配置・選択などの更新はrequestAnimationFrameにまとめ、候補判定は不変の配置ごとに作る空間索引で近傍を抽出してから検査します。重なり診断用の交差多角形はSutherland–Hodgman法で求めます。配置可能辺の高速判定と詳細診断は、429枚の穴付きパッチの全外周候補を使い、両モードで同じ可否になることを検証しています。数百枚の利用を想定した設計です。
