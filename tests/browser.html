@@ -1,0 +1,117 @@
+<!doctype html><html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Penrose browser regression tests</title><style>body{font:16px system-ui;margin:32px;line-height:1.7}li{margin:10px 0}.pass{color:#176638}.fail{color:#b52332}#stage{width:800px;height:600px;max-width:100%;border:1px solid #ddd}</style><h1>ブラウザ回帰テスト</h1><p id="summary">テスト中…</p><ol id="results"></ol><svg id="stage" xmlns="http://www.w3.org/2000/svg"></svg><script type="module">
+import {sun} from '../fixtures/generate.mjs';import {topology,bounds,attach,validate} from '../geometry.js';import {tileSVG,createPNG} from '../render.js';
+const results=document.querySelector('#results');let failures=0,count=0;
+const check=(ok,message)=>{if(!ok)throw Error(message);};
+async function test(name,fn){count++;try{const detail=await fn();const li=document.createElement('li');li.className='pass';li.textContent='PASS '+name+(detail?' — '+detail:'');results.append(li);}catch(e){failures++;const li=document.createElement('li');li.className='fail';li.textContent='FAIL '+name+' — '+e.message;results.append(li);}}
+const patch=sun(5),settings={bumps:true,showArcs:true,color:true};
+await test('430枚のSVG描画と配置候補判定',async()=>{
+ const start=performance.now(),top=topology(patch),b=bounds(patch,.4),stage=document.querySelector('#stage');stage.setAttribute('viewBox',`${b.x} ${b.y} ${b.w} ${b.h}`);stage.innerHTML=patch.map(t=>tileSVG(t,settings)).join('');
+ const e=top.exposed[0];for(let i=0;i<4;i++)validate(attach(patch[e.tile],e.i,'thick',i),patch,true);
+ await new Promise(requestAnimationFrame);check(stage.querySelectorAll('path').length===1290,'SVGピース数が不正');check(top.violations.length===0,'マッチング違反');return (performance.now()-start).toFixed(1)+' ms（1回の計測、端末依存）';
+});
+for(const background of ['white','transparent'])await test('PNGエンコード・4096px・'+background,async()=>{
+ const {blob,width,height}=await createPNG(patch,{...settings,background});check(blob.type==='image/png','MIME');check(Math.max(width,height)===4096,'解像度');
+ const bytes=new Uint8Array(await blob.arrayBuffer());check(bytes.slice(0,8).join(',')==='137,80,78,71,13,10,26,10','PNGシグネチャ');
+ const image=new Image(),url=URL.createObjectURL(blob);try{await new Promise((resolve,reject)=>{image.onload=resolve;image.onerror=reject;image.src=url;});const c=document.createElement('canvas');c.width=width;c.height=height;const ctx=c.getContext('2d');ctx.drawImage(image,0,0);const corners=[[0,0],[width-1,0],[0,height-1],[width-1,height-1]].map(([x,y])=>[...ctx.getImageData(x,y,1,1).data]);
+ for(const p of corners)check(background==='white'?p.every(v=>v===255):p[3]===0,'背景の角画素');
+ const pixels=ctx.getImageData(0,0,width,height).data;let painted=0;for(let i=0;i<pixels.length;i+=4)if(pixels[i+3]>0&&pixels[i]<245)painted++;check(painted>width*height*.2,'図が空');c.width=c.height=1;
+ return `${width} × ${height}px, ${blob.size} bytes, 角画素 ${corners[0].join('/')}`;
+ }finally{URL.revokeObjectURL(url);}
+});
+await test('PNG: 不整合の共有辺と操作用強調を画像に含めない',async()=>{
+ const pair=[{type:'thick',x:0,y:0,angle:0}];pair.push(attach(pair[0],0,'thick',0));const violations=topology(pair).violations;
+ const options={bumps:true,showArcs:true,color:true,showGuides:true,background:'transparent',last:true};
+ const a=await createPNG(pair,options),b=await createPNG(pair,options,violations),aa=new Uint8Array(await a.blob.arrayBuffer()),bb=new Uint8Array(await b.blob.arrayBuffer());
+ check(violations.length===1,'不整合の検体');check(aa.length===bb.length&&aa.every((v,i)=>v===bb[i]),'エラー表示がPNGに混入');return '違反辺あり／なしでPNGバイト列が一致';
+});
+// UI regression tests run a normal app document in an isolated iframe, then
+// restore localStorage. Synthesized pointer events test the event handlers; real
+// pointer capture / Safari gestures are additionally covered by the manual checklist.
+const saved=localStorage.getItem('penrose-v1');localStorage.setItem('penrose-v1','[]');
+const iframe=document.createElement('iframe');iframe.title='操作回帰テスト用アプリ';iframe.style='display:block;width:100%;height:850px;border:1px solid #ccc';
+const loaded=new Promise(resolve=>iframe.onload=resolve);iframe.src='../index.html';document.body.append(iframe);await loaded;
+const doc=iframe.contentDocument,win=iframe.contentWindow;
+const tick=()=>new Promise(resolve=>win.requestAnimationFrame(()=>win.requestAnimationFrame(resolve)));
+const press=async selector=>{const el=doc.querySelector(selector);check(el,'対象がない: '+selector);el.dispatchEvent(new win.KeyboardEvent('keydown',{key:'Enter',bubbles:true}));await tick();};
+const click=async selector=>{check(doc.querySelector(selector),'対象がない: '+selector);doc.querySelector(selector).click();await tick();};
+// SVG groups have no other g siblings; select edge-number by its actual list instead.
+const pick=async(type,i)=>{const el=doc.querySelectorAll(`#palette-${type} .edge-number`)[i];check(el,'追加辺がない');el.dispatchEvent(new win.KeyboardEvent('keydown',{key:'Enter',bubbles:true}));await tick();};
+const tileCount=()=>Number(doc.querySelector('#total').textContent.replace(/\D/g,''));
+const boardEdge=async(tile,i)=>press(`#world [data-action="edge"][data-tile="${tile}"][data-edge="${i}"]`);
+const reset=async()=>{if(doc.querySelector('#deleteMode').getAttribute('aria-pressed')==='true')await click('#deleteMode');await click('#reset');await click('#strict');};
+const tileData=()=>localStorage.getItem('penrose-v1');
+await tick();
+try {
+ await test('UI: 配置ボタンなし・先に配置済み辺を選ぶ自動配置',async()=>{
+  await pick('thick',0);check(tileCount()===1,'最初の1枚');check(!doc.querySelector('#place'),'配置ボタンが残っている');
+  await boardEdge(0,0);await pick('thin',0);check(tileCount()===2,'2クリック配置');check(doc.querySelector('#cancel').hidden,'選択が残る');
+ });
+ await test('UI: 先に追加辺を選ぶ自動配置・不一致の辺と×を表示',async()=>{
+  await reset();await pick('thick',0);await pick('thin',0);await boardEdge(0,0);check(tileCount()===2,'逆順配置');
+  await reset();await pick('thick',0);await boardEdge(0,0);await pick('thick',0);check(tileCount()===1,'不正な配置');check(doc.querySelector('[data-overlay="candidate"]'),'赤い候補がない');check(doc.querySelector('#status').textContent.includes('一致しません'),'理由がない');
+ });
+ await test('UI: タイル上・辺上からドラッグ、6px閾値、タッチ／ピンチ',async()=>{
+  await reset();await pick('thick',0);const board=doc.querySelector('#board');
+  const emit=(target,type,id,x,y,pointerType='mouse')=>target.dispatchEvent(new win.PointerEvent(type,{pointerId:id,clientX:x,clientY:y,pointerType,button:0,bubbles:true}));
+  const drag=async(target,pointerType)=>{const before=doc.querySelector('#world').getAttribute('transform'),data=tileData();emit(target,'pointerdown',1,400,350,pointerType);emit(board,'pointermove',1,440,380,pointerType);emit(board,'pointerup',1,440,380,pointerType);await tick();check(doc.querySelector('#world').getAttribute('transform')!==before,'画面が動かない');check(tileData()===data,'タイル座標が変化');check(doc.querySelector('#cancel').hidden,'ドラッグで辺を選択');};
+  await drag(doc.querySelector('#world g path'),'mouse');await drag(doc.querySelector('#world [data-action="edge"]'),'touch');
+  const target=doc.querySelector('#world [data-action="edge"]');emit(target,'pointerdown',1,400,350,'touch');emit(board,'pointerdown',2,500,350,'touch');const before=doc.querySelector('#world').getAttribute('transform');emit(board,'pointermove',2,540,350,'touch');emit(board,'pointerup',2,540,350,'touch');emit(board,'pointerup',1,400,350,'touch');await tick();check(doc.querySelector('#world').getAttribute('transform')!==before,'ピンチ倍率');check(doc.querySelector('#cancel').hidden,'ピンチで選択');
+  const edge=doc.querySelector('#world [data-action="edge"]');emit(edge,'pointerdown',3,400,350);emit(board,'pointermove',3,403,350);emit(board,'pointerup',3,403,350);await tick();check(!doc.querySelector('#cancel').hidden,'閾値以下をクリックとしない');
+ });
+ await test('UI: 任意削除・Undo/Redo・削除中ドラッグは削除しない',async()=>{
+  await reset();await pick('thick',0);await boardEdge(0,0);await pick('thin',0);await click('#deleteMode');
+  const board=doc.querySelector('#board'),target=doc.querySelector('[data-action="delete"][data-tile="0"]');
+  for(const [type,x]of [['pointerdown',400],['pointermove',440],['pointerup',440]])(type==='pointerdown'?target:board).dispatchEvent(new win.PointerEvent(type,{pointerId:1,clientX:x,clientY:350,pointerType:'touch',button:0,bubbles:true}));
+  await tick();check(tileCount()===2,'ドラッグで削除');await press('[data-action="delete"][data-tile="0"]');check(tileCount()===1,'最初のタイル削除');await click('#undo');check(tileCount()===2,'削除Undo');await click('#redo');check(tileCount()===1,'削除Redo');
+ });
+ await test('UI: 重複候補・正確な交差多角形・エラーの保持',async()=>{
+  await reset();await pick('thick',0);await click('#free');
+  let found=false,beforeCount;
+  outer:for(let growth=0;growth<8;growth++){
+   const tiles=JSON.parse(tileData());
+   for(const e of topology(tiles).exposed)for(const type of ['thick','thin'])for(let i=0;i<4;i++){
+    const c=attach(tiles[e.tile],e.i,type,i);if(validate(c,tiles,false).reason.includes('重な')){
+     beforeCount=tileCount();await boardEdge(e.tile,e.i);await pick(type,i);found=true;break outer;
+    }
+   }
+   const e=topology(tiles).exposed[0],option=['thick','thin'].flatMap(type=>[0,1,2,3].map(i=>({type,i,c:attach(tiles[e.tile],e.i,type,i)}))).find(o=>validate(o.c,tiles,false).ok);
+   check(option,'成長候補なし');await boardEdge(e.tile,e.i);await pick(option.type,option.i);
+  }
+  check(found,'衝突例が見つからない');check(tileCount()===beforeCount,'重複が配置された');check(doc.querySelector('polygon[data-overlay="intersection"]'),'交差領域がない');check(doc.querySelector('#status').textContent.includes('既存のタイルと重なっています'),'重複理由');await tick();check(doc.querySelector('[data-overlay="candidate"]'),'次の操作前に消えた');
+ });
+ await test('UI: モード切替・違反数・違反箇所の拡大・自由モードの弧',async()=>{
+  await reset();await pick('thick',0);await click('#free');await boardEdge(0,0);await pick('thick',0);const snapshot=tileData();
+  doc.querySelector('#arcs').checked=true;doc.querySelector('#arcs').dispatchEvent(new win.Event('change'));await tick();check(doc.querySelector('#world path[stroke="#247fa8"]'),'自由モードの弧がない');
+  await click('#strict');check(tileData()===snapshot,'モードで配置変化');check(doc.querySelector('#violationCount').textContent.includes('1本'),'違反数');
+  const before=doc.querySelector('#world').getAttribute('transform');await press('[data-action="violation"]');check(doc.querySelector('#world').getAttribute('transform')!==before,'違反へ拡大しない');check(tileCount()===2,'違反でタイルを失う');
+ });
+ await test('UI: 菱形の輪郭の初期OFF・固定線幅・モード制限・PNG反映',async()=>{
+  await reset();check(!doc.querySelector('#guides').checked,'初期OFF');await pick('thick',0);
+  const label=doc.querySelector('#guides').closest('label');check(label.textContent==='菱形の輪郭','表示名');
+  doc.querySelector('#guides').checked=true;doc.querySelector('#guides').dispatchEvent(new win.Event('change'));await tick();
+  let outline=doc.querySelector('#world [data-rhomb-outline]');check(outline,'輪郭なし');check(win.getComputedStyle(outline).vectorEffect==='non-scaling-stroke','固定線幅でない');
+  await click('#zoomOut');outline=doc.querySelector('#world [data-rhomb-outline]');check(win.getComputedStyle(outline).strokeWidth==='1.4px','縮小で線幅変化');
+  const tiles=JSON.parse(tileData()),off=await createPNG(tiles,{...settings,showGuides:false,background:'white'}),on=await createPNG(tiles,{...settings,showGuides:true,background:'white'});
+  const a=new Uint8Array(await off.blob.arrayBuffer()),b=new Uint8Array(await on.blob.arrayBuffer());check(a.length!==b.length||a.some((v,i)=>v!==b[i]),'PNGに輪郭のON/OFFが反映されない');
+  await click('#free');check(doc.querySelector('#guides').disabled&&!doc.querySelector('#guides').checked,'自由モードで使用可能');check(!doc.querySelector('#world [data-rhomb-outline]'),'自由モードに輪郭が残る');
+  await click('#strict');check(!doc.querySelector('#guides').disabled&&!doc.querySelector('#guides').checked,'復帰時の状態');
+ });
+ await test('UI: 配置可能辺ON/OFF・穴の境界を含む・400枚以上',async()=>{
+  await reset();await pick('thick',0);await click('#free');await boardEdge(0,0);await pick('thick',0);await boardEdge(0,1);await pick('thick',0);await click('#strict');
+  doc.querySelector('#available').checked=true;doc.querySelector('#available').dispatchEvent(new win.Event('change'));await tick();
+  check(doc.querySelector('#world path[stroke="#c94d57"]'),'候補なしの赤い辺がない');
+  doc.querySelector('#available').checked=false;doc.querySelector('#available').dispatchEvent(new win.Event('change'));await tick();
+  await click('#example');const before=tileData();doc.querySelector('#available').checked=true;doc.querySelector('#available').dispatchEvent(new win.Event('change'));await tick();
+  const deadline=performance.now()+10000;while(doc.querySelector('#availabilityLegend').textContent.includes('計算中')&&performance.now()<deadline)await tick();
+  check(!doc.querySelector('#availabilityLegend').textContent.includes('計算中'),'計算完了待ち');check(doc.querySelector('#world path[stroke="#31865b"]'),'緑の辺がない');check(tileData()===before,'候補計算が配置を変更');
+  doc.querySelector('#available').checked=false;doc.querySelector('#available').dispatchEvent(new win.Event('change'));await tick();check(!doc.querySelector('#world path[stroke="#31865b"]'),'OFFで強調が残る');
+  // The normal app also opens a saved >400-piece patch, including the per-edge availability pass.
+  localStorage.setItem('penrose-v1',JSON.stringify(patch));const reloaded=new Promise(resolve=>iframe.onload=resolve);iframe.src='../index.html';await reloaded;
+  const d=iframe.contentDocument;await new Promise(resolve=>iframe.contentWindow.requestAnimationFrame(()=>iframe.contentWindow.requestAnimationFrame(resolve)));check(d.querySelector('#total').textContent.includes('430'),'430枚復元');
+  const toggle=d.querySelector('#available');toggle.checked=true;toggle.dispatchEvent(new iframe.contentWindow.Event('change'));const start=performance.now();
+  while(d.querySelector('#availabilityLegend').hidden||d.querySelector('#availabilityLegend').textContent.includes('計算中')){if(performance.now()-start>10000)throw Error('430枚の候補計算タイムアウト');await new Promise(requestAnimationFrame);}
+  return '430枚の外周候補表示まで '+(performance.now()-start).toFixed(1)+' ms';
+ });
+} finally {if(saved===null)localStorage.removeItem('penrose-v1');else localStorage.setItem('penrose-v1',saved);}
+document.querySelector('#summary').textContent=`${count-failures} / ${count} PASS`;document.documentElement.dataset.result=failures?'fail':'pass';
+</script></html>
